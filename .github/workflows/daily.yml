@@ -1,0 +1,44 @@
+name: Daily Arxiv Digest
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 每天 UTC 0 点（≈ Shanghai 早上8点）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_SMTP_HOST: mail.tiaozhan.com
+          EMAIL_SMTP_PORT: "465"
+          EMAIL_USE_SSL: "true"
+          EMAIL_USE_STARTTLS: "false"
+        run: python main.py
+
+      - name: Commit seen_ids
+        run: |
+          git config user.name "arxiv-bot"
+          git config user.email "bot@github.com"
+          git add seen_ids.json
+          git commit -m "update seen ids" || true
+          git push
