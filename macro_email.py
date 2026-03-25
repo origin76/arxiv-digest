@@ -27,8 +27,11 @@ def format_number(value, digits=2):
 def format_signed(value, digits=2, suffix=""):
     if value is None:
         return "n/a"
-    sign = "+" if value > 0 else ""
-    return f"{sign}{value:.{digits}f}{suffix}"
+    rounded_value = round(value, digits)
+    if rounded_value == 0:
+        rounded_value = 0.0
+    sign = "+" if rounded_value > 0 else ""
+    return f"{sign}{rounded_value:.{digits}f}{suffix}"
 
 
 def change_color(value):
@@ -60,8 +63,8 @@ def safe_escape(value, default=""):
     return escape(safe_text(value, default))
 
 
-def build_market_rows(items, percent_suffix=True):
-    rows = []
+def build_market_blocks(items, percent_suffix=True):
+    blocks = []
     for item in items:
         price = format_number(item.get("price"))
         unit = safe_text(item.get("unit"))
@@ -76,29 +79,56 @@ def build_market_rows(items, percent_suffix=True):
             source_suffix = f" | {source}"
         if stale:
             source_suffix += " | cached"
+        price_font_size = "18px" if unit else "24px"
 
-        rows.append(
+        blocks.append(
             f"""
-            <tr>
-              <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-weight:700;color:#0f172a;">
-                <div>{safe_escape(item.get('label'), 'Unknown')}</div>
-                <div style="font-size:11px;color:#94a3b8;font-weight:600;">{safe_escape(item.get('symbol'))}{safe_escape(source_suffix)}</div>
-              </td>
-              <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#1e293b;">{safe_escape(price)}</td>
-              <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:{change_color(item.get('change'))};">{safe_escape(change)}</td>
-              <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:{change_color(item.get('change_pct'))};">{safe_escape(change_pct)}</td>
-            </tr>
+            <table role="presentation" style="width:100%;border-collapse:separate;border-spacing:0;margin:0 0 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;">
+              <tr>
+                <td style="padding:14px 16px;">
+                  <div style="font-size:16px;font-weight:800;color:#0f172a;line-height:1.4;">{safe_escape(item.get('label'), 'Unknown')}</div>
+                  <div style="font-size:11px;color:#94a3b8;font-weight:600;margin-top:4px;">{safe_escape(item.get('symbol'))}{safe_escape(source_suffix)}</div>
+
+                  <table role="presentation" style="width:100%;border-collapse:collapse;margin-top:12px;">
+                    <tr>
+                      <td style="padding:0 0 10px;color:#64748b;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">Level</td>
+                      <td align="right" style="padding:0 0 10px;color:#0f172a;font-size:{price_font_size};font-weight:800;line-height:1.2;">{safe_escape(price)}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:10px 0 0;border-top:1px solid #e2e8f0;color:#64748b;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">Chg</td>
+                      <td align="right" style="padding:10px 0 0;border-top:1px solid #e2e8f0;color:{change_color(item.get('change'))};font-size:15px;font-weight:700;">{safe_escape(change)}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:10px 0 0;border-top:1px solid #e2e8f0;color:#64748b;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">Chg %</td>
+                      <td align="right" style="padding:10px 0 0;border-top:1px solid #e2e8f0;color:{change_color(item.get('change_pct'))};font-size:15px;font-weight:700;">{safe_escape(change_pct)}</td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
             """
         )
-    if not rows:
-        rows.append(
+    if not blocks:
+        blocks.append(
             """
-            <tr>
-              <td colspan="4" style="padding:10px 12px;color:#64748b;">No market data available.</td>
-            </tr>
+            <div style="padding:10px 2px;color:#64748b;">No market data available.</div>
             """
         )
-    return "".join(rows)
+    return "".join(blocks)
+
+
+def build_stat_block(title, value, subvalue, subvalue_color="#64748b"):
+    return f"""
+    <table role="presentation" style="width:100%;border-collapse:separate;border-spacing:0;margin:0 0 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;">
+      <tr>
+        <td style="padding:14px 16px;">
+          <div style="font-size:12px;color:#64748b;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px;">{safe_escape(title)}</div>
+          <div style="font-size:26px;font-weight:800;color:#0f172a;line-height:1.15;">{safe_escape(value)}</div>
+          <div style="margin-top:8px;font-size:13px;color:{subvalue_color};line-height:1.6;">{safe_escape(subvalue)}</div>
+        </td>
+      </tr>
+    </table>
+    """
 
 
 def build_rates_card(rates):
@@ -119,45 +149,19 @@ def build_rates_card(rates):
     return f"""
     <section style="background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;padding:20px 22px;box-shadow:0 8px 24px rgba(15,23,42,0.05);">
       <div style="font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">利率 / Rates</div>
-      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;">
-        <div style="background:#f8fafc;border-radius:14px;padding:14px 16px;">
-          <div style="font-size:12px;color:#64748b;margin-bottom:6px;">US 2Y</div>
-          <div style="font-size:24px;font-weight:800;color:#0f172a;">{safe_escape(us_2y_display)}</div>
-          <div style="font-size:13px;color:{change_color(us_2y.get('change_bps'))};">{safe_escape(format_signed(us_2y.get('change_bps'), suffix='bp'))}</div>
-        </div>
-        <div style="background:#f8fafc;border-radius:14px;padding:14px 16px;">
-          <div style="font-size:12px;color:#64748b;margin-bottom:6px;">US 10Y</div>
-          <div style="font-size:24px;font-weight:800;color:#0f172a;">{safe_escape(us_10y_display)}</div>
-          <div style="font-size:13px;color:{change_color(us_10y.get('change_bps'))};">{safe_escape(format_signed(us_10y.get('change_bps'), suffix='bp'))}</div>
-        </div>
-        <div style="background:#f8fafc;border-radius:14px;padding:14px 16px;">
-          <div style="font-size:12px;color:#64748b;margin-bottom:6px;">10Y-2Y Curve</div>
-          <div style="font-size:24px;font-weight:800;color:#0f172a;">{safe_escape(format_signed(curve, suffix='bp'))}</div>
-          <div style="font-size:13px;color:#64748b;">As of {safe_escape(rates.get('as_of_date'), 'n/a')}</div>
-        </div>
-      </div>
+      {build_stat_block("US 2Y", us_2y_display, format_signed(us_2y.get('change_bps'), suffix='bp'), change_color(us_2y.get('change_bps')))}
+      {build_stat_block("US 10Y", us_10y_display, format_signed(us_10y.get('change_bps'), suffix='bp'), change_color(us_10y.get('change_bps')))}
+      {build_stat_block("10Y-2Y Curve", format_signed(curve, suffix='bp'), f"As of {safe_text(rates.get('as_of_date'), 'n/a')}")}
       <div style="margin-top:10px;font-size:11px;color:#94a3b8;">{safe_escape(footer)}</div>
     </section>
     """
 
 
-def build_table_card(title, items):
+def build_market_card(title, items):
     return f"""
     <section style="background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;padding:20px 22px;box-shadow:0 8px 24px rgba(15,23,42,0.05);">
       <div style="font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">{escape(title)}</div>
-      <table style="width:100%;border-collapse:collapse;">
-        <thead>
-          <tr>
-            <th align="left" style="padding:0 12px 10px;color:#64748b;font-size:12px;text-transform:uppercase;">Asset</th>
-            <th align="left" style="padding:0 12px 10px;color:#64748b;font-size:12px;text-transform:uppercase;">Level</th>
-            <th align="left" style="padding:0 12px 10px;color:#64748b;font-size:12px;text-transform:uppercase;">Chg</th>
-            <th align="left" style="padding:0 12px 10px;color:#64748b;font-size:12px;text-transform:uppercase;">Chg %</th>
-          </tr>
-        </thead>
-        <tbody>
-          {build_market_rows(items)}
-        </tbody>
-      </table>
+      {build_market_blocks(items)}
     </section>
     """
 
@@ -226,44 +230,47 @@ def build_macro_email(report, market_snapshot, config):
 
     html = f"""
     <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
       <body style="margin:0;padding:0;background:#e7ecf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;">
-        <div style="max-width:1020px;margin:0 auto;padding:28px 18px 40px;">
-          <header style="background:linear-gradient(135deg,#111827 0%,#1d4ed8 55%,#0f766e 100%);border-radius:28px;padding:30px 30px 24px;color:#ffffff;box-shadow:0 18px 50px rgba(15,23,42,0.24);margin-bottom:22px;">
+        <div style="max-width:680px;margin:0 auto;padding:18px 12px 32px;">
+          <header style="background:linear-gradient(135deg,#111827 0%,#1d4ed8 55%,#0f766e 100%);border-radius:24px;padding:24px 22px 20px;color:#ffffff;box-shadow:0 18px 50px rgba(15,23,42,0.24);margin-bottom:16px;">
             <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:16px;">
               <div>
                 <div style="font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;opacity:0.8;margin-bottom:10px;">Macro Signal Extractor / 宏观信号压缩器</div>
-                <h1 style="margin:0 0 10px;font-size:34px;line-height:1.15;max-width:760px;">{safe_escape(report.get('headline_zh'), report.get('headline'))}</h1>
-                <div style="font-size:15px;line-height:1.7;opacity:0.82;max-width:760px;">{safe_escape(report.get('headline'), 'Macro daily brief')}</div>
+                <h1 style="margin:0 0 10px;font-size:28px;line-height:1.2;max-width:560px;">{safe_escape(report.get('headline_zh'), report.get('headline'))}</h1>
+                <div style="font-size:14px;line-height:1.7;opacity:0.82;max-width:560px;">{safe_escape(report.get('headline'), 'Macro daily brief')}</div>
               </div>
               <div style="background:rgba(255,255,255,0.16);border:1px solid rgba(255,255,255,0.24);padding:10px 14px;border-radius:999px;font-size:14px;font-weight:800;white-space:nowrap;">
                 {safe_escape(regime_to_zh(regime), regime)} / {safe_escape(regime)}
               </div>
             </div>
-            <p style="margin:0 0 10px;font-size:16px;line-height:1.9;max-width:780px;opacity:0.98;">{safe_escape(report.get('cross_asset_take_zh'), report.get('cross_asset_take'))}</p>
-            <p style="margin:0;font-size:13px;line-height:1.8;max-width:780px;opacity:0.8;">{safe_escape(report.get('cross_asset_take'), 'No cross-asset view was produced.')}</p>
+            <p style="margin:0 0 10px;font-size:15px;line-height:1.85;max-width:560px;opacity:0.98;">{safe_escape(report.get('cross_asset_take_zh'), report.get('cross_asset_take'))}</p>
+            <p style="margin:0;font-size:13px;line-height:1.8;max-width:560px;opacity:0.8;">{safe_escape(report.get('cross_asset_take'), 'No cross-asset view was produced.')}</p>
           </header>
 
-          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-bottom:18px;">
-            {build_table_card("大宗商品 / Commodities", market_snapshot.get("commodities", []))}
+          <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px;">
+            {build_market_card("大宗商品 / Commodities", market_snapshot.get("commodities", []))}
             {build_rates_card(market_snapshot.get("rates", {}))}
-            {build_table_card("板块 / Sector Equities", market_snapshot.get("equities", []))}
-            {build_table_card("外汇 / FX", market_snapshot.get("fx", []))}
+            {build_market_card("板块 / Sector Equities", market_snapshot.get("equities", []))}
+            {build_market_card("外汇 / FX", market_snapshot.get("fx", []))}
           </div>
 
-          <div style="display:grid;grid-template-columns:1fr;gap:18px;margin-bottom:18px;">
+          <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px;">
             {build_signal_cards(report)}
           </div>
 
-          <section style="background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;padding:22px 24px;box-shadow:0 8px 24px rgba(15,23,42,0.05);margin-bottom:18px;">
+          <section style="background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;padding:20px 22px;box-shadow:0 8px 24px rgba(15,23,42,0.05);margin-bottom:16px;">
             <div style="font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">模块总结 / Module Takeaways</div>
-            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;">
+            <div style="display:grid;grid-template-columns:1fr;gap:14px;">
               {build_module_cards(report)}
             </div>
           </section>
 
-          <section style="background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;padding:22px 24px;box-shadow:0 8px 24px rgba(15,23,42,0.05);">
+          <section style="background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;padding:20px 22px;box-shadow:0 8px 24px rgba(15,23,42,0.05);">
             <div style="font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">明日观察 / Tomorrow Watchlist</div>
-            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;">
+            <div style="display:grid;grid-template-columns:1fr;gap:14px;">
               <div>
                 <div style="font-size:12px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px;">中文</div>
                 <ul style="margin:0;padding-left:20px;color:#1e293b;font-size:14px;line-height:1.8;">
