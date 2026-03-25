@@ -24,6 +24,8 @@
 - 使用 DashScope 兼容 OpenAI API 的模型做评估和摘要
 - 先判断论文是否在 digest 范围内，再按“是否值得认真读”打分
 - 对通过筛选的论文排序，最终只发送 Top 10
+- 对待评估论文在 LLM 评估前批量并发调用 OpenAlex，按作者名补作者单位
+- 对 LLM 相关性评估和 summary 阶段做受控并发，减少串行等待
 - 支持 `DRY_RUN`，可以先看结果不发邮件
 - 自动生成详细日志和调试产物
 - GitHub Actions 支持定时运行
@@ -33,11 +35,18 @@
 ```text
 .
 ├── .github/workflows/daily.yml   # GitHub Actions 定时任务
-├── main.py                       # 主流程：抓取、评估、排序、摘要、发邮件
+├── main.py                       # 薄入口，负责启动 pipeline
+├── digest_pipeline.py            # 主流程编排
+├── digest_config.py              # 环境变量与运行时配置
+├── digest_runtime.py             # 日志、artifact、LLM client
+├── digest_sources.py             # arXiv/OpenAlex/作者元数据
+├── digest_llm.py                 # 评估、摘要、LLM 并发
+├── digest_email.py               # 邮件渲染与 SMTP 发送
 ├── prompts.py                    # LLM prompt
 ├── requirements.txt              # Python 依赖
 ├── seen_ids.json                 # 已处理论文 ID
 ├── local.env.sh                  # 本地环境变量脚本（已被 gitignore）
+├── openalex_cache.json           # OpenAlex 作者单位缓存（已被 gitignore）
 └── logs/                         # 调试日志与产物（已被 gitignore）
 ```
 
@@ -88,6 +97,12 @@ source ./local.env.sh
 | `LOCAL_TIMEZONE` | 本地时区，默认 `Asia/Shanghai` |
 | `LLM_MODEL` | 评估和摘要使用的模型 |
 | `LLM_TIMEOUT_SECONDS` | 单次 LLM 请求超时时间 |
+| `LLM_ASSESS_MAX_WORKERS` | 相关性评估阶段的并发线程数，默认 8 |
+| `LLM_SUMMARY_MAX_WORKERS` | summary 阶段的并发线程数，默认 4 |
+| `OPENALEX_ENRICHMENT_ENABLED` | 是否在评估前按作者名用 OpenAlex 补作者单位，默认 `true` |
+| `OPENALEX_TIMEOUT_SECONDS` | OpenAlex 请求超时时间，默认 15 秒 |
+| `OPENALEX_MAX_WORKERS` | OpenAlex 并发线程数，默认 8 |
+| `OPENALEX_EMAIL` | 可选。只有你想显式标识调用方时才设置；默认不传 `mailto` |
 
 ### 3. 本地 dry run
 
@@ -120,6 +135,7 @@ python main.py
 - `run.log`
 - `pipeline_summary.json`
 - `paper_assessments.json`
+- `openalex_enrichment.json`
 - `ranked_candidates.json`
 - `selected_papers.json`
 - `email_preview.html`
@@ -133,8 +149,21 @@ python main.py
 
 1. 先用 `DRY_RUN=true`
 2. 先看 `pipeline_summary.json`
-3. 再看 `ranked_candidates.json`
-4. 最后看 `email_preview.html`
+3. 再看 `openalex_enrichment.json`
+4. 然后看 `ranked_candidates.json`
+5. 最后看 `email_preview.html`
+
+`openalex_enrichment.json` 里会记录每篇待评估论文的：
+
+- 每个缺失 affiliation 的作者是否命中缓存
+- 每个作者是否命中唯一可信的 OpenAlex author
+- 命中的 author id / name / works_count
+- 每个作者最终补到了什么单位
+- 实际补了几个作者单位
+
+OpenAlex 现在会在 LLM 判断相关性之前统一批量跑完，并且会对作者名去重后再并发请求，避免串行网络等待成为主瓶颈。
+
+LLM 的相关性评估和 summary 阶段现在都支持受控并发，默认分别使用 `LLM_ASSESS_MAX_WORKERS=8` 和 `LLM_SUMMARY_MAX_WORKERS=4`。如果你的模型限流比较紧，可以把它们调低。
 
 ## 部署到 GitHub
 

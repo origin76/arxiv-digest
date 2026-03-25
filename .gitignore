@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 local.env.sh
 logs/
+openalex_cache.json
