@@ -6,3 +6,4 @@ __pycache__/
 local.env.sh
 logs/
 openalex_cache.json
+macro_market_cache.json

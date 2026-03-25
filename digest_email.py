@@ -82,10 +82,10 @@ def build_email(papers):
     """
 
 
-def send_email(html, smtp_config):
+def send_email(html, smtp_config, subject="Top 10: OS, AI Infra, AI Compilers, Program Analysis"):
     recipients = [item.strip() for item in smtp_config["to"].split(",") if item.strip()]
     msg = MIMEText(html, "html", "utf-8")
-    msg["Subject"] = "Top 10: OS, AI Infra, AI Compilers, Program Analysis"
+    msg["Subject"] = subject
     msg["From"] = smtp_config["user"]
     msg["To"] = ", ".join(recipients)
 

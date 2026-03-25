@@ -1,5 +1,10 @@
 # arXiv Digest
 
+这个仓库现在包含两条独立链路：
+
+- `main.py`: arXiv 论文日报
+- `macro_main.py`: 宏观信号压缩日报
+
 一个自动化论文 digest 工具：每天抓取 arXiv 上昨天发布的论文，在给定范围内做筛选和打分，选出最值得读的 Top 10，生成摘要邮件并发送。
 
 当前 digest 的关注范围是：
@@ -29,6 +34,7 @@
 - 支持 `DRY_RUN`，可以先看结果不发邮件
 - 自动生成详细日志和调试产物
 - GitHub Actions 支持定时运行
+- 新增独立的 Macro Signal Extractor，用来压缩宏观/地缘、大宗、国债、板块、外汇信号
 
 ## 项目结构
 
@@ -36,12 +42,19 @@
 .
 ├── .github/workflows/daily.yml   # GitHub Actions 定时任务
 ├── main.py                       # 薄入口，负责启动 pipeline
+├── macro_main.py                 # 宏观日报入口
 ├── digest_pipeline.py            # 主流程编排
 ├── digest_config.py              # 环境变量与运行时配置
 ├── digest_runtime.py             # 日志、artifact、LLM client
 ├── digest_sources.py             # arXiv/OpenAlex/作者元数据
 ├── digest_llm.py                 # 评估、摘要、LLM 并发
 ├── digest_email.py               # 邮件渲染与 SMTP 发送
+├── macro_pipeline.py             # 宏观日报主流程编排
+├── macro_config.py               # 宏观日报配置
+├── macro_sources.py              # 宏观新闻与市场数据抓取
+├── macro_llm.py                  # 宏观日报 LLM 压缩
+├── macro_email.py                # 宏观日报邮件渲染
+├── macro_prompts.py              # 宏观日报 prompt
 ├── prompts.py                    # LLM prompt
 ├── requirements.txt              # Python 依赖
 ├── seen_ids.json                 # 已处理论文 ID
@@ -125,6 +138,77 @@ source ./local.env.sh
 export DRY_RUN=false
 python main.py
 ```
+
+## 宏观日报
+
+新增的 `Macro Signal Extractor` 是一条独立链路，目标不是罗列新闻，而是只保留“会改变世界状态”的宏观信号。
+
+固定覆盖 5 个模块：
+
+- Macro / Geopolitics
+- Commodities
+- Rates / Sovereign Bonds
+- Equities by sector
+- FX
+
+当前默认数据设计：
+
+- 新闻面：Google News RSS 搜索聚合，按模块抓取高相关 headline
+- 市场面：默认优先用 `yfinance` 拉这 12 个市场标的；若部分缺失，再回退到 Stooq 和 Frankfurter；DXY 优先用 `DX-Y.NYB`，失败时再按 6 币种权重公式推导；Yahoo 原生接口默认关闭，仅在显式开启时做补缺；FRED 为主，Treasury 官方 CSV 与当前月页面为备份抓美债 2Y / 10Y
+- 压缩层：LLM 将新闻和跨资产快照合并成一封短而高信号的日报，并输出中英双语摘要
+
+### 宏观日报环境变量
+
+除了通用变量外，宏观链路还支持这些配置：
+
+| 变量 | 说明 |
+| --- | --- |
+| `MACRO_EMAIL_TO` | 可选。宏观日报单独收件人；不设时回退到 `EMAIL_TO` |
+| `MACRO_NEWS_LOOKBACK_HOURS` | 新闻回看窗口，默认 36 小时 |
+| `MACRO_MAX_HEADLINES_PER_BUCKET` | 每个模块最多保留多少条 headline，默认 8 |
+| `MACRO_NEWS_MAX_WORKERS` | 新闻抓取并发数，默认 8 |
+| `MACRO_NEWS_TIMEOUT_SECONDS` | 单个新闻源超时，默认 15 秒 |
+| `MACRO_NEWS_RETRIES` | Google News RSS 重试次数，默认 2 |
+| `MACRO_MARKET_TIMEOUT_SECONDS` | 市场数据超时，默认 15 秒 |
+| `MACRO_MARKET_RETRIES` | 市场数据重试次数，默认 3 |
+| `MACRO_RATES_MAX_AGE_DAYS` | 利率快照允许的最大陈旧天数，默认 10，过旧数据会被拒绝 |
+| `FRED_MAX_RETRIES` | FRED 重试次数，默认 1，失败后更快切到 Treasury 备用源 |
+| `STOOQ_MAX_RETRIES` | Stooq 请求重试次数，默认 2 |
+| `STOOQ_MAX_WORKERS` | Stooq 并发数，默认 2 |
+| `YAHOO_ENABLED` | 是否启用 Yahoo 作为补缺源，默认 `false` |
+| `YAHOO_MAX_RETRIES` | Yahoo 请求重试次数，默认 3 |
+| `YAHOO_CHART_MAX_WORKERS` | Yahoo chart fallback 并发数，默认 1 |
+
+### 本地 dry run
+
+```bash
+source .venv/bin/activate
+source ./local.env.sh
+export DRY_RUN=true
+python macro_main.py
+```
+
+### 真正发信
+
+```bash
+source .venv/bin/activate
+source ./local.env.sh
+export DRY_RUN=false
+python macro_main.py
+```
+
+### 宏观日报产物
+
+每次运行会额外生成这些调试文件：
+
+- `macro_config.json`
+- `macro_news_inputs.json`
+- `macro_market_snapshot.json`
+- `macro_report.json`
+- `macro_pipeline_summary.json`
+- `macro_email_preview.html`
+
+如果某个新闻源或市场源失败，链路会尽量降级继续跑，并把失败信息记到 artifact 和日志里。
 
 ## 日志与调试
 

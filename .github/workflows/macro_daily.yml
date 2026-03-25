@@ -1,0 +1,43 @@
+name: Daily Macro Digest
+
+on:
+  schedule:
+    - cron: '50 0 * * *'   # 每天 UTC 00:50（Shanghai 早上 08:50）
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macro-daily
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run macro pipeline
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          MACRO_EMAIL_TO: ${{ secrets.MACRO_EMAIL_TO }}
+          EMAIL_SMTP_HOST: mail.tiaozhan.com
+          EMAIL_SMTP_PORT: "465"
+          EMAIL_USE_SSL: "true"
+          EMAIL_USE_STARTTLS: "false"
+          LOCAL_TIMEZONE: Asia/Shanghai
+        run: python macro_main.py
