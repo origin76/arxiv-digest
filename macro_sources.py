@@ -115,9 +115,9 @@ MACRO_NEWS_BUCKETS = {
     "equities": {
         "label": "Equities",
         "queries": [
-            "technology sector rotation",
-            "energy sector financial sector",
-            "defense sector market",
+            "technology communication services consumer discretionary sectors",
+            "energy financials industrials materials sectors",
+            "health care consumer staples utilities real estate sectors",
         ],
     },
     "fx": {
@@ -173,10 +173,17 @@ MARKET_GROUPS = {
         },
     ],
     "equities": [
-        {"key": "technology", "label": "Technology", "symbol": "XLK", "stooq_symbol": "xlk.us", "yfinance_symbol": "XLK", "currency": "USD"},
+        {"key": "communication_services", "label": "Communication Services", "symbol": "XLC", "stooq_symbol": "xlc.us", "yfinance_symbol": "XLC", "currency": "USD"},
+        {"key": "consumer_discretionary", "label": "Consumer Discretionary", "symbol": "XLY", "stooq_symbol": "xly.us", "yfinance_symbol": "XLY", "currency": "USD"},
+        {"key": "consumer_staples", "label": "Consumer Staples", "symbol": "XLP", "stooq_symbol": "xlp.us", "yfinance_symbol": "XLP", "currency": "USD"},
         {"key": "energy", "label": "Energy", "symbol": "XLE", "stooq_symbol": "xle.us", "yfinance_symbol": "XLE", "currency": "USD"},
         {"key": "financials", "label": "Financials", "symbol": "XLF", "stooq_symbol": "xlf.us", "yfinance_symbol": "XLF", "currency": "USD"},
-        {"key": "defense", "label": "Aerospace & Defense", "symbol": "ITA", "stooq_symbol": "ita.us", "yfinance_symbol": "ITA", "currency": "USD"},
+        {"key": "health_care", "label": "Health Care", "symbol": "XLV", "stooq_symbol": "xlv.us", "yfinance_symbol": "XLV", "currency": "USD"},
+        {"key": "industrials", "label": "Industrials", "symbol": "XLI", "stooq_symbol": "xli.us", "yfinance_symbol": "XLI", "currency": "USD"},
+        {"key": "materials", "label": "Materials", "symbol": "XLB", "stooq_symbol": "xlb.us", "yfinance_symbol": "XLB", "currency": "USD"},
+        {"key": "real_estate", "label": "Real Estate", "symbol": "XLRE", "stooq_symbol": "xlre.us", "yfinance_symbol": "XLRE", "currency": "USD"},
+        {"key": "technology", "label": "Technology", "symbol": "XLK", "stooq_symbol": "xlk.us", "yfinance_symbol": "XLK", "currency": "USD"},
+        {"key": "utilities", "label": "Utilities", "symbol": "XLU", "stooq_symbol": "xlu.us", "yfinance_symbol": "XLU", "currency": "USD"},
     ],
     "fx": [
         {
