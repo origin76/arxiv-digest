@@ -16,6 +16,8 @@ from digest_runtime import LOGGER, write_json_artifact
 SEEN_IDS_PATH = Path("seen_ids.json")
 OPENALEX_CACHE_PATH = Path("openalex_cache.json")
 ARXIV_SEARCH_QUERY = "(cat:cs.OS OR cat:cs.PL OR cat:cs.LG OR cat:cs.DC OR cat:cs.AR)"
+ARXIV_API_BASE = "https://export.arxiv.org/api/query"
+ARXIV_TIMEOUT_SECONDS = 30
 OPENALEX_API_BASE = "https://api.openalex.org"
 OPENALEX_AUTHOR_SEARCH_SELECT_FIELDS = "id,display_name,works_count,orcid"
 HARD_EXCLUDE_PATTERNS = [
@@ -50,7 +52,18 @@ def build_arxiv_url(max_results):
         "sortOrder": "descending",
         "max_results": max_results,
     }
-    return f"http://export.arxiv.org/api/query?{urlencode(params)}"
+    return f"{ARXIV_API_BASE}?{urlencode(params)}"
+
+
+def fetch_arxiv_feed(url):
+    headers = {
+        "User-Agent": "arxiv-digest/1.0 (+https://github.com/)",
+        "Accept": "application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+    }
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=ARXIV_TIMEOUT_SECONDS) as response:
+        payload = response.read()
+    return feedparser.parse(payload)
 
 
 def get_target_date(config):
@@ -99,7 +112,7 @@ def fetch_papers(config):
             config["local_timezone"],
             paged_url,
         )
-        feed = feedparser.parse(paged_url)
+        feed = fetch_arxiv_feed(paged_url)
         duration = time.perf_counter() - start_time
 
         if getattr(feed, "bozo", False):
