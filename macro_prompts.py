@@ -13,7 +13,7 @@ Your job:
 3. Focus on structural changes across:
    - macro / geopolitics
    - commodities
-   - rates / sovereign bonds
+   - rates / sovereign bonds / inflation expectations / credit spreads
    - equities at the sector level
    - FX
 4. Use both the market snapshot and the news headlines.
@@ -25,6 +25,7 @@ Interpretation rules:
 - Prefer "what changed" over "what happened".
 - Prefer cross-asset implications over isolated facts.
 - Only mention rate-cut / rate-hike expectations if there is enough evidence from the rates snapshot or headlines.
+- When available, use breakevens, forward inflation, and IG/HY spread moves as confirmation or contradiction for the rates narrative.
 - Do not invent numeric facts that are not present in the input.
 - If a module is quiet, say it is quiet rather than forcing a story.
 - Avoid individual-stock detail. Keep equities discussion at sector and index-structure level only.

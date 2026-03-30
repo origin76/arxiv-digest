@@ -154,7 +154,8 @@ python main.py
 当前默认数据设计：
 
 - 新闻面：Google News RSS 搜索聚合，按模块抓取高相关 headline
-- 市场面：默认优先用 `yfinance` 拉这 12 个市场标的；若部分缺失，再回退到 Stooq 和 Frankfurter；DXY 优先用 `DX-Y.NYB`，失败时再按 6 币种权重公式推导；Yahoo 原生接口默认关闭，仅在显式开启时做补缺；FRED 为主，Treasury 官方 CSV 与当前月页面为备份抓美债 2Y / 10Y
+- 市场面：默认优先用 `yfinance` 拉这 12 个市场标的；若部分缺失，再回退到 Stooq 和 Frankfurter；DXY 优先用 `DX-Y.NYB`，失败时再按 6 币种权重公式推导；Yahoo 原生接口默认关闭，仅在显式开启时做补缺
+- Rates 面：核心国债仍以 FRED 为主，Treasury 官方 CSV 与当前月页面为备份抓美债 2Y / 10Y；同时 best-effort 补充 FRED 债券指标，包括 `5Y5Y forward inflation (T5YIFR)`、`5Y breakeven (T5YIE)`、`10Y breakeven (T10YIE)`、`US IG OAS (BAMLC0A0CM)`、`US HY OAS (BAMLH0A0HYM2)`；若 live 抓取失败，则直接留空，不使用本地旧缓存兜底
 - 压缩层：LLM 将新闻和跨资产快照合并成一封短而高信号的日报，并输出中英双语摘要
 
 ### 宏观日报环境变量
@@ -172,7 +173,7 @@ python main.py
 | `MACRO_MARKET_TIMEOUT_SECONDS` | 市场数据超时，默认 15 秒 |
 | `MACRO_MARKET_RETRIES` | 市场数据重试次数，默认 3 |
 | `MACRO_RATES_MAX_AGE_DAYS` | 利率快照允许的最大陈旧天数，默认 10，过旧数据会被拒绝 |
-| `FRED_MAX_RETRIES` | FRED 重试次数，默认 1，失败后更快切到 Treasury 备用源 |
+| `FRED_MAX_RETRIES` | FRED 重试次数，默认 2；补充债券指标优先走 FRED，失败时直接留空，不使用本地旧缓存补齐 |
 | `STOOQ_MAX_RETRIES` | Stooq 请求重试次数，默认 2 |
 | `STOOQ_MAX_WORKERS` | Stooq 并发数，默认 2 |
 | `YAHOO_ENABLED` | 是否启用 Yahoo 作为补缺源，默认 `false` |

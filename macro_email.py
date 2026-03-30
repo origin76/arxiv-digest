@@ -17,6 +17,25 @@ MODULE_ZH_MAP = {
     "FX": "外汇",
 }
 
+RATE_CARD_SECTION_SPECS = [
+    {
+        "title": "美债 / Treasury",
+        "series_keys": ["us_2y", "us_10y"],
+    },
+    {
+        "title": "通胀预期 / Inflation",
+        "series_keys": [
+            "us_5y_breakeven",
+            "us_10y_breakeven",
+            "us_5y5y_forward_inflation",
+        ],
+    },
+    {
+        "title": "信用 / Credit",
+        "series_keys": ["us_ig_oas", "us_hy_oas"],
+    },
+]
+
 
 def format_number(value, digits=2):
     if value is None:
@@ -131,27 +150,93 @@ def build_stat_block(title, value, subvalue, subvalue_color="#64748b"):
     """
 
 
+def format_level_with_display(series):
+    if not isinstance(series, dict):
+        return "n/a"
+
+    value = series.get("value")
+    if value is None:
+        return "n/a"
+
+    if series.get("display") == "bps":
+        return f"{format_number(value * 100, digits=1)}bp"
+
+    formatted = format_number(value)
+    return f"{formatted}%" if formatted != "n/a" else formatted
+
+
+def build_rate_stat_block(series):
+    if not isinstance(series, dict):
+        return ""
+
+    title = safe_text(series.get("label"), "Unknown")
+    change_text = format_signed(series.get("change_bps"), suffix="bp")
+    as_of_date = safe_text(series.get("as_of_date"))
+    if series.get("stale"):
+        if change_text == "n/a":
+            change_text = "cached"
+        else:
+            change_text = f"{change_text} | cached"
+    if change_text == "n/a" and as_of_date:
+        subvalue = f"As of {as_of_date}"
+    elif as_of_date:
+        subvalue = f"{change_text} | As of {as_of_date}"
+    else:
+        subvalue = change_text
+
+    return build_stat_block(
+        title,
+        format_level_with_display(series),
+        subvalue,
+        change_color(series.get("change_bps")),
+    )
+
+
+def build_rates_section(title, blocks):
+    if not blocks:
+        return ""
+
+    return f"""
+    <div style="margin-top:14px;">
+      <div style="font-size:11px;color:#94a3b8;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">{safe_escape(title)}</div>
+      {''.join(blocks)}
+    </div>
+    """
+
+
 def build_rates_card(rates):
     series = rates.get("series", {}) if isinstance(rates, dict) else {}
-    us_2y = series.get("us_2y", {})
-    us_10y = series.get("us_10y", {})
     curve = rates.get("curve_10y_2y_bps")
-    us_2y_value = format_number(us_2y.get("value"))
-    us_10y_value = format_number(us_10y.get("value"))
-    us_2y_display = f"{us_2y_value}%" if us_2y_value != "n/a" else us_2y_value
-    us_10y_display = f"{us_10y_value}%" if us_10y_value != "n/a" else us_10y_value
     source = rates.get("source") or "unknown"
     cached_at = rates.get("cached_at")
     footer = f"Source: {source}"
     if cached_at:
         footer += f" | Cached at {cached_at}"
+    supplemental_errors = rates.get("supplemental_errors") or []
+    if supplemental_errors:
+        footer += f" | Supplemental gaps: {len(supplemental_errors)}"
+
+    sections = []
+    for section_spec in RATE_CARD_SECTION_SPECS:
+        blocks = [
+            build_rate_stat_block(series.get(series_key))
+            for series_key in section_spec["series_keys"]
+            if isinstance(series.get(series_key), dict)
+        ]
+        if section_spec["title"].startswith("美债") and curve is not None:
+            blocks.append(
+                build_stat_block(
+                    "10Y-2Y Curve",
+                    format_signed(curve, suffix="bp"),
+                    f"As of {safe_text(rates.get('as_of_date'), 'n/a')}",
+                )
+            )
+        sections.append(build_rates_section(section_spec["title"], blocks))
 
     return f"""
     <section style="background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;padding:20px 22px;box-shadow:0 8px 24px rgba(15,23,42,0.05);">
       <div style="font-size:13px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">利率 / Rates</div>
-      {build_stat_block("US 2Y", us_2y_display, format_signed(us_2y.get('change_bps'), suffix='bp'), change_color(us_2y.get('change_bps')))}
-      {build_stat_block("US 10Y", us_10y_display, format_signed(us_10y.get('change_bps'), suffix='bp'), change_color(us_10y.get('change_bps')))}
-      {build_stat_block("10Y-2Y Curve", format_signed(curve, suffix='bp'), f"As of {safe_text(rates.get('as_of_date'), 'n/a')}")}
+      {''.join(section for section in sections if section)}
       <div style="margin-top:10px;font-size:11px;color:#94a3b8;">{safe_escape(footer)}</div>
     </section>
     """
@@ -287,8 +372,8 @@ def build_macro_email(report, market_snapshot, config):
           </section>
 
           <section style="margin-top:16px;color:#64748b;font-size:12px;line-height:1.8;padding:0 4px;">
-            <div>行情源优先级：默认优先使用 yfinance 拉全市场快照；缺口再回退到 Stooq 与 Frankfurter；DXY 优先使用 yfinance 的 `DX-Y.NYB`，否则按 6 币种权重公式推导；Yahoo 原生接口默认关闭；国债源优先级：FRED -> Treasury 官方 CSV -> Treasury 当前月页面 -> Treasury 通用页面 -> 本地缓存。</div>
-            <div>Market source priority: yfinance is used first for the full market snapshot by default; gaps then fall back to Stooq and Frankfurter; DXY prefers yfinance `DX-Y.NYB`, otherwise it is derived from the six-currency weighted formula; native Yahoo endpoints remain disabled by default; rates source priority: FRED -> Treasury official CSV -> Treasury current-month page -> generic Treasury page -> local cache.</div>
+            <div>行情源优先级：默认优先使用 yfinance 拉全市场快照；缺口再回退到 Stooq 与 Frankfurter；DXY 优先使用 yfinance 的 `DX-Y.NYB`，否则按 6 币种权重公式推导；Yahoo 原生接口默认关闭；核心国债源优先级：FRED -> Treasury 官方 CSV -> Treasury 当前月页面 -> Treasury 通用页面；补充债券指标（如 5YBE / 10YBE / 5Y5Y / IG / HY）为 FRED best-effort；不再使用本地旧缓存兜底，拿不到就留空。</div>
+            <div>Market source priority: yfinance is used first for the full market snapshot by default; gaps then fall back to Stooq and Frankfurter; DXY prefers yfinance `DX-Y.NYB`, otherwise it is derived from the six-currency weighted formula; native Yahoo endpoints remain disabled by default; core Treasury rates use FRED -> Treasury official CSV -> Treasury current-month page -> generic Treasury page; supplemental bond metrics such as 5Y breakevens, 5Y5Y forward inflation, and IG/HY spreads are best-effort from FRED; stale local cache is no longer used as a fallback.</div>
           </section>
         </div>
       </body>

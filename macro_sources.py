@@ -3,6 +3,7 @@ import io
 import json
 import math
 import re
+import subprocess
 import time
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,6 +43,7 @@ YAHOO_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 TREASURY_TEXTVIEW_HEADING = "Daily Treasury Par Yield Curve Rates"
 STOOQ_DAILY_URL_TEMPLATE = "https://stooq.com/q/d/l/?s={symbol}&i=d"
 FRANKFURTER_LOOKBACK_DAYS = 10
+FRED_LOOKBACK_DAYS = 120
 DXY_INDEX_MULTIPLIER = 50.14348112
 DXY_COMPONENT_WEIGHTS = {
     "eurusd": -0.576,
@@ -226,6 +228,54 @@ MARKET_GROUPS = {
     ],
 }
 
+RATE_SERIES_SPECS = {
+    "us_2y": {
+        "label": "US 2Y",
+        "series_id": "DGS2",
+        "group": "treasury",
+    },
+    "us_10y": {
+        "label": "US 10Y",
+        "series_id": "DGS10",
+        "group": "treasury",
+    },
+    "us_5y5y_forward_inflation": {
+        "label": "US 5Y5Y Fwd Inflation",
+        "series_id": "T5YIFR",
+        "group": "inflation_expectations",
+    },
+    "us_5y_breakeven": {
+        "label": "US 5Y Breakeven",
+        "series_id": "T5YIE",
+        "group": "inflation_expectations",
+    },
+    "us_10y_breakeven": {
+        "label": "US 10Y Breakeven",
+        "series_id": "T10YIE",
+        "group": "inflation_expectations",
+    },
+    "us_ig_oas": {
+        "label": "US IG OAS",
+        "series_id": "BAMLC0A0CM",
+        "group": "credit",
+        "display": "bps",
+    },
+    "us_hy_oas": {
+        "label": "US HY OAS",
+        "series_id": "BAMLH0A0HYM2",
+        "group": "credit",
+        "display": "bps",
+    },
+}
+CORE_TREASURY_RATE_KEYS = ["us_2y", "us_10y"]
+SUPPLEMENTAL_FRED_RATE_KEYS = [
+    "us_5y5y_forward_inflation",
+    "us_5y_breakeven",
+    "us_10y_breakeven",
+    "us_ig_oas",
+    "us_hy_oas",
+]
+
 
 def clean_text(value):
     return " ".join(str(value or "").split())
@@ -301,7 +351,7 @@ def update_macro_market_cache(quote_map=None, rates_snapshot=None):
 
     if rates_snapshot:
         cache["rates_cached_at"] = cache["updated_at"]
-        cache["rates_snapshot"] = rates_snapshot
+        cache["rates_snapshot"] = sanitize_rates_snapshot(rates_snapshot)
 
     save_macro_market_cache(cache)
 
@@ -323,10 +373,8 @@ def get_cached_quote_map():
 
 
 def get_cached_rates_snapshot():
-    cache = load_macro_market_cache()
-    rates_snapshot = cache.get("rates_snapshot")
-    cached_at = cache.get("rates_cached_at")
-    if not isinstance(rates_snapshot, dict) or not rates_snapshot:
+    rates_snapshot, cached_at = get_cached_rates_snapshot_raw()
+    if not rates_snapshot:
         return None, None
 
     cached_snapshot = deepcopy(rates_snapshot)
@@ -334,6 +382,52 @@ def get_cached_rates_snapshot():
     cached_snapshot["stale"] = True
     cached_snapshot["cached_at"] = cached_at
     return cached_snapshot, cached_at
+
+
+def get_cached_rates_snapshot_raw():
+    cache = load_macro_market_cache()
+    rates_snapshot = cache.get("rates_snapshot")
+    cached_at = cache.get("rates_cached_at")
+    if not isinstance(rates_snapshot, dict) or not rates_snapshot:
+        return None, None
+    return deepcopy(rates_snapshot), cached_at
+
+
+def sanitize_rate_series_entry(entry):
+    if not isinstance(entry, dict):
+        return None
+
+    sanitized_entry = deepcopy(entry)
+    sanitized_entry.pop("stale", None)
+    sanitized_entry.pop("cached_at", None)
+    source = clean_text(sanitized_entry.get("source"))
+    if source.startswith("cache:"):
+        sanitized_entry["source"] = source.split("cache:", 1)[1] or "unknown"
+    return sanitized_entry
+
+
+def sanitize_rates_snapshot(snapshot):
+    if not isinstance(snapshot, dict):
+        return snapshot
+
+    sanitized_snapshot = deepcopy(snapshot)
+    sanitized_snapshot.pop("stale", None)
+    sanitized_snapshot.pop("cached_at", None)
+
+    source = clean_text(sanitized_snapshot.get("source"))
+    if source.startswith("cache:"):
+        sanitized_snapshot["source"] = source.split("cache:", 1)[1] or "unknown"
+
+    series = sanitized_snapshot.get("series")
+    if isinstance(series, dict):
+        sanitized_series = {}
+        for key, entry in series.items():
+            sanitized_entry = sanitize_rate_series_entry(entry)
+            if sanitized_entry is not None:
+                sanitized_series[key] = sanitized_entry
+        sanitized_snapshot["series"] = sanitized_series
+
+    return sanitized_snapshot
 
 
 def build_http_headers(accept=None):
@@ -580,6 +674,27 @@ def fetch_text_url(url, timeout_seconds):
         return response.read().decode("utf-8")
 
 
+def fetch_text_url_via_curl(url, timeout_seconds, accept=None):
+    command = [
+        "curl",
+        "-sS",
+        "-L",
+        "--connect-timeout",
+        str(min(timeout_seconds, 10)),
+        "--max-time",
+        str(timeout_seconds),
+    ]
+    command.append(url)
+
+    completed = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout
+
+
 def fetch_json_url_with_retries(urls, timeout_seconds, attempts, label, failure_level="warning"):
     if isinstance(urls, str):
         urls = [urls]
@@ -643,9 +758,10 @@ def fetch_json_url_with_retries(urls, timeout_seconds, attempts, label, failure_
     raise last_exc
 
 
-def fetch_text_url_with_retries(url, timeout_seconds, attempts, label, failure_level="warning"):
+def fetch_text_url_with_retries(url, timeout_seconds, attempts, label, failure_level="warning", fetcher=None):
     last_exc = None
     log_failure = getattr(LOGGER, failure_level, LOGGER.warning)
+    fetcher = fetcher or fetch_text_url
     for attempt in range(1, attempts + 1):
         start_time = time.perf_counter()
         try:
@@ -657,7 +773,7 @@ def fetch_text_url_with_retries(url, timeout_seconds, attempts, label, failure_l
                 timeout_seconds,
                 url,
             )
-            text = fetch_text_url(url, timeout_seconds)
+            text = fetcher(url, timeout_seconds)
             duration = time.perf_counter() - start_time
             LOGGER.info(
                 "HTTP text fetch finished | label=%s attempt=%d/%d duration=%.2fs",
@@ -733,6 +849,17 @@ def build_frankfurter_range_url(start_date, end_date, symbols):
     date_range = f"{start_date.isoformat()}..{end_date.isoformat()}"
     params = {"to": ",".join(symbols)}
     return f"{FRANKFURTER_RANGE_URL_TEMPLATE.format(date_range=date_range)}?{urlencode(params)}"
+
+
+def build_fred_series_url(series_id):
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=FRED_LOOKBACK_DAYS)
+    params = {
+        "id": series_id,
+        "cosd": start_date.isoformat(),
+        "coed": end_date.isoformat(),
+    }
+    return f"https://fred.stlouisfed.org/graph/fredgraph.csv?{urlencode(params)}"
 
 
 def compute_change_metrics(latest_price, previous_price):
@@ -1650,16 +1777,7 @@ def fetch_yahoo_quotes(config, symbols=None, allow_cache_write=True):
         )
         return quote_map
 
-    cached_quote_map, cached_at = get_cached_quote_map()
-    if cached_quote_map:
-        LOGGER.warning(
-            "Using cached Yahoo market data after live fetch failure | count=%d cached_at=%s",
-            len(cached_quote_map),
-            cached_at,
-        )
-        return cached_quote_map
-
-    raise RuntimeError("Yahoo market data was unavailable from live endpoints and cache")
+    raise RuntimeError("Yahoo market data was unavailable from live endpoints")
 
 
 def maybe_update_quote_cache(quote_map, label):
@@ -1686,31 +1804,7 @@ def maybe_update_quote_cache(quote_map, label):
 
 
 def fill_market_quote_gaps_from_cache(quote_map, symbols, reason):
-    cached_quote_map, cached_at = get_cached_quote_map()
-    if not cached_quote_map:
-        return dict(quote_map), []
-
-    merged_map = dict(quote_map)
-    filled_symbols = []
-    for symbol in symbols:
-        if symbol in merged_map:
-            continue
-        cached_quote = cached_quote_map.get(symbol)
-        if not cached_quote:
-            continue
-        merged_map[symbol] = cached_quote
-        filled_symbols.append(symbol)
-
-    if filled_symbols:
-        LOGGER.info(
-            "Filled market quote gaps from cache | reason=%s filled=%d cached_at=%s symbols=%s",
-            reason,
-            len(filled_symbols),
-            cached_at,
-            filled_symbols,
-        )
-
-    return merged_map, filled_symbols
+    return dict(quote_map), []
 
 
 def summarize_quote_sources(quote_map):
@@ -1830,16 +1924,7 @@ def fetch_market_quotes(config):
         )
         return combined_map
 
-    cached_quote_map, cached_at = get_cached_quote_map()
-    if cached_quote_map:
-        LOGGER.warning(
-            "Using cached market quotes after live source failure | count=%d cached_at=%s",
-            len(cached_quote_map),
-            cached_at,
-        )
-        return cached_quote_map
-
-    raise RuntimeError("Market quotes were unavailable from live sources and cache")
+    raise RuntimeError("Market quotes were unavailable from live sources")
 
 
 def find_last_two_values(rows, column_name):
@@ -1849,9 +1934,10 @@ def find_last_two_values(rows, column_name):
         numeric_value = to_float(value)
         if numeric_value is None:
             continue
+        date_value = row.get("DATE") or row.get("date") or row.get("observation_date")
         values.append(
             {
-                "date": row.get("DATE"),
+                "date": clean_text(date_value),
                 "value": numeric_value,
             }
         )
@@ -1885,34 +1971,56 @@ def parse_supported_date(value):
     return None
 
 
-def build_rates_snapshot(latest_2y, previous_2y, latest_10y, previous_10y, source):
-    change_2y_bps = None
-    if previous_2y is not None:
-        change_2y_bps = round((latest_2y["value"] - previous_2y["value"]) * 100, 2)
+def build_rate_series_entry(key, latest_value, previous_value, source):
+    spec = RATE_SERIES_SPECS[key]
+    change_bps = None
+    if previous_value is not None:
+        change_bps = round((latest_value["value"] - previous_value["value"]) * 100, 2)
 
-    change_10y_bps = None
-    if previous_10y is not None:
-        change_10y_bps = round((latest_10y["value"] - previous_10y["value"]) * 100, 2)
+    entry = {
+        "label": spec["label"],
+        "value": latest_value["value"],
+        "change_bps": change_bps,
+        "as_of_date": latest_value["date"],
+        "group": spec.get("group"),
+        "source": source,
+        "display": spec.get("display", "percent"),
+    }
+    if source == "fred":
+        entry["series_id"] = spec.get("series_id")
+    return entry
 
-    curve_bps = round((latest_10y["value"] - latest_2y["value"]) * 100, 2)
+
+def build_rates_snapshot(core_series, source):
+    series = deepcopy(core_series or {})
+    us_2y = series.get("us_2y")
+    us_10y = series.get("us_10y")
+    if not isinstance(us_2y, dict) or not isinstance(us_10y, dict):
+        raise RuntimeError("Rates snapshot requires valid us_2y and us_10y series")
+
+    curve_bps = round((us_10y["value"] - us_2y["value"]) * 100, 2)
 
     return {
-        "as_of_date": latest_10y["date"] or latest_2y["date"],
-        "series": {
-            "us_2y": {
-                "label": "US 2Y",
-                "value": latest_2y["value"],
-                "change_bps": change_2y_bps,
-            },
-            "us_10y": {
-                "label": "US 10Y",
-                "value": latest_10y["value"],
-                "change_bps": change_10y_bps,
-            },
-        },
+        "as_of_date": us_10y.get("as_of_date") or us_2y.get("as_of_date"),
+        "series": series,
         "curve_10y_2y_bps": curve_bps,
         "source": source,
     }
+
+
+def merge_supplemental_rates(snapshot, supplemental_series, supplemental_errors=None):
+    if not isinstance(snapshot, dict):
+        return snapshot
+
+    merged_snapshot = deepcopy(snapshot)
+    series = merged_snapshot.setdefault("series", {})
+    if isinstance(supplemental_series, dict):
+        series.update(supplemental_series)
+    if supplemental_errors:
+        merged_snapshot["supplemental_errors"] = supplemental_errors
+    else:
+        merged_snapshot.pop("supplemental_errors", None)
+    return merged_snapshot
 
 
 def validate_rates_snapshot_freshness(snapshot, config, source_label):
@@ -1977,7 +2085,13 @@ def parse_treasury_rows(rows, date_key, two_year_key, ten_year_key, source):
         else None
     )
 
-    return build_rates_snapshot(latest_2y, previous_2y, latest_10y, previous_10y, source=source)
+    return build_rates_snapshot(
+        {
+            "us_2y": build_rate_series_entry("us_2y", latest_2y, previous_2y, source=source),
+            "us_10y": build_rate_series_entry("us_10y", latest_10y, previous_10y, source=source),
+        },
+        source=source,
+    )
 
 
 def parse_fred_series_csv(csv_text, series_id):
@@ -1989,10 +2103,29 @@ def parse_fred_series_csv(csv_text, series_id):
 
 
 def fetch_fred_series(series_id, config):
-    url = FRED_SERIES_URL_TEMPLATE.format(series_id=series_id)
+    url = build_fred_series_url(series_id)
+    timeout_seconds = config["macro_market_timeout_seconds"]
+
+    try:
+        csv_text = fetch_text_url_with_retries(
+            url,
+            timeout_seconds,
+            config["fred_max_retries"],
+            label=f"fred:{series_id}:curl",
+            failure_level="info",
+            fetcher=lambda request_url, request_timeout: fetch_text_url_via_curl(
+                request_url,
+                request_timeout,
+                accept="text/csv,*/*;q=0.9",
+            ),
+        )
+        return parse_fred_series_csv(csv_text, series_id)
+    except Exception as curl_exc:
+        LOGGER.info("FRED curl fetch failed, falling back to urllib | series=%s error=%s", series_id, curl_exc)
+
     csv_text = fetch_text_url_with_retries(
         url,
-        config["macro_market_timeout_seconds"],
+        timeout_seconds,
         config["fred_max_retries"],
         label=f"fred:{series_id}",
         failure_level="info",
@@ -2000,23 +2133,97 @@ def fetch_fred_series(series_id, config):
     return parse_fred_series_csv(csv_text, series_id)
 
 
-def fetch_fred_treasury_snapshot(config):
-    start_time = time.perf_counter()
+def fetch_fred_rate_series_entries(config, series_keys):
+    if not series_keys:
+        return {}, []
+
+    worker_count = min(2, len(series_keys))
     LOGGER.info(
-        "Fetching treasury data from FRED | series=%s retries=%s",
-        ["DGS2", "DGS10"],
+        "Fetching FRED rate series bundle | series=%s retries=%s workers=%d",
+        [RATE_SERIES_SPECS[key]["series_id"] for key in series_keys],
         config["fred_max_retries"],
+        worker_count,
     )
 
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="fred-series") as executor:
-        future_2y = executor.submit(fetch_fred_series, "DGS2", config)
-        future_10y = executor.submit(fetch_fred_series, "DGS10", config)
-        latest_2y, previous_2y = future_2y.result()
-        latest_10y, previous_10y = future_10y.result()
+    series_entries = {}
+    errors = []
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="fred-series") as executor:
+        future_map = {
+            executor.submit(fetch_fred_series, RATE_SERIES_SPECS[key]["series_id"], config): key
+            for key in series_keys
+        }
+        for future in as_completed(future_map):
+            key = future_map[future]
+            spec = RATE_SERIES_SPECS[key]
+            try:
+                latest_value, previous_value = future.result()
+                series_entries[key] = build_rate_series_entry(
+                    key,
+                    latest_value,
+                    previous_value,
+                    source="fred",
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "key": key,
+                        "series_id": spec["series_id"],
+                        "error": str(exc),
+                    }
+                )
+    return series_entries, errors
+
+
+def is_rate_entry_fresh(entry, config):
+    if not isinstance(entry, dict):
+        return False
+    as_of_date = parse_supported_date(entry.get("as_of_date"))
+    if as_of_date is None:
+        return False
+
+    local_today = datetime.now(ZoneInfo(config["local_timezone"])).date()
+    age_days = (local_today - as_of_date.date()).days
+    return 0 <= age_days <= config["macro_rates_max_age_days"]
+
+
+def build_cached_rate_series_entry(entry, cached_at):
+    cached_entry = deepcopy(entry)
+    cached_entry["source"] = f"cache:{cached_entry.get('source', 'unknown')}"
+    cached_entry["stale"] = True
+    cached_entry["cached_at"] = cached_at
+    return cached_entry
+
+
+def get_cached_supplemental_rate_series(config):
+    cached_snapshot, cached_at = get_cached_rates_snapshot_raw()
+    if not cached_snapshot:
+        return {}, None
+
+    series = cached_snapshot.get("series")
+    if not isinstance(series, dict):
+        return {}, cached_at
+
+    cached_series = {}
+    for key in SUPPLEMENTAL_FRED_RATE_KEYS:
+        entry = series.get(key)
+        if not is_rate_entry_fresh(entry, config):
+            continue
+        cached_series[key] = build_cached_rate_series_entry(entry, cached_at)
+    return cached_series, cached_at
+
+
+def fetch_fred_treasury_snapshot(config):
+    start_time = time.perf_counter()
+    series_entries, errors = fetch_fred_rate_series_entries(config, CORE_TREASURY_RATE_KEYS)
+    missing_keys = [key for key in CORE_TREASURY_RATE_KEYS if key not in series_entries]
+    if missing_keys:
+        raise RuntimeError(
+            f"FRED treasury snapshot is incomplete | missing={missing_keys} errors={errors}"
+        )
 
     duration = time.perf_counter() - start_time
     LOGGER.info("Fetched treasury data from FRED | duration=%.2fs", duration)
-    return build_rates_snapshot(latest_2y, previous_2y, latest_10y, previous_10y, source="fred")
+    return build_rates_snapshot(series_entries, source="fred")
 
 
 def parse_treasury_csv_snapshot(csv_text):
@@ -2199,52 +2406,63 @@ def fetch_rates_snapshot(config):
     except Exception as treasury_exc:
         LOGGER.warning("Treasury backup source failed, trying cache | error=%s", treasury_exc)
 
-    cached_snapshot, cached_at = get_cached_rates_snapshot()
-    if cached_snapshot:
-        try:
-            validated_snapshot = validate_rates_snapshot_freshness(
-                cached_snapshot,
-                config,
-                source_label=f"cached rates snapshot ({cached_snapshot.get('source')})",
-            )
-            LOGGER.warning(
-                "Using cached rates snapshot after live fetch failure | cached_at=%s source=%s",
-                cached_at,
-                cached_snapshot.get("source"),
-            )
-            return validated_snapshot
-        except Exception as cache_exc:
-            LOGGER.warning(
-                "Cached rates snapshot rejected | cached_at=%s source=%s error=%s",
-                cached_at,
-                cached_snapshot.get("source"),
-                cache_exc,
-            )
+    raise RuntimeError("Rates data was unavailable from FRED and Treasury backup")
 
-    raise RuntimeError("Rates data was unavailable from FRED, Treasury backup, and cache")
+
+def enrich_rates_snapshot_with_fred_supplemental(snapshot, config):
+    if not isinstance(snapshot, dict) or not snapshot:
+        return snapshot
+
+    try:
+        supplemental_series, supplemental_errors = fetch_fred_rate_series_entries(
+            config,
+            SUPPLEMENTAL_FRED_RATE_KEYS,
+        )
+    except Exception as exc:
+        LOGGER.warning("Supplemental FRED rates fetch failed | error=%s", exc)
+        return snapshot
+
+    if not supplemental_series and not supplemental_errors:
+        return snapshot
+
+    if supplemental_errors:
+        LOGGER.warning(
+            "Supplemental FRED rates fetch completed with gaps | requested=%d succeeded=%d failed=%d",
+            len(SUPPLEMENTAL_FRED_RATE_KEYS),
+            len(supplemental_series),
+            len(supplemental_errors),
+        )
+    else:
+        LOGGER.info(
+            "Supplemental FRED rates fetch succeeded | requested=%d",
+            len(SUPPLEMENTAL_FRED_RATE_KEYS),
+        )
+
+    return merge_supplemental_rates(snapshot, supplemental_series, supplemental_errors)
 
 
 def build_market_items(group_key, quote_map):
     items = []
     for spec in MARKET_GROUPS[group_key]:
         quote = quote_map.get(spec["symbol"], {})
-        items.append(
-            {
-                "key": spec["key"],
-                "label": quote.get("name") or spec["label"],
-                "symbol": spec["symbol"],
-                "price": quote.get("price"),
-                "change": quote.get("change"),
-                "change_pct": quote.get("change_pct"),
-                "currency": quote.get("currency"),
-                "unit": quote.get("unit"),
-                "market_time_epoch": quote.get("market_time_epoch"),
-                "available": spec["symbol"] in quote_map,
-                "source": quote.get("source"),
-                "stale": bool(quote.get("stale")),
-                "cached_at": quote.get("cached_at"),
-            }
-        )
+        item = {
+            "key": spec["key"],
+            "label": quote.get("name") or spec["label"],
+            "symbol": spec["symbol"],
+            "price": quote.get("price"),
+            "change": quote.get("change"),
+            "change_pct": quote.get("change_pct"),
+            "currency": quote.get("currency"),
+            "unit": quote.get("unit"),
+            "market_time_epoch": quote.get("market_time_epoch"),
+            "available": spec["symbol"] in quote_map,
+            "source": quote.get("source"),
+        }
+        if quote.get("stale"):
+            item["stale"] = True
+        if quote.get("cached_at"):
+            item["cached_at"] = quote.get("cached_at")
+        items.append(item)
     return items
 
 
@@ -2274,11 +2492,13 @@ def fetch_market_snapshot(config):
     snapshot = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "commodities": build_market_items("commodities", quote_map),
-        "rates": treasury_snapshot,
+        "rates": enrich_rates_snapshot_with_fred_supplemental(treasury_snapshot, config),
         "equities": build_market_items("equities", quote_map),
         "fx": build_market_items("fx", quote_map),
         "errors": errors,
     }
+    if snapshot["rates"]:
+        update_macro_market_cache(rates_snapshot=snapshot["rates"])
 
     duration = time.perf_counter() - start_time
     LOGGER.info(
