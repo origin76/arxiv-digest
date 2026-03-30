@@ -32,6 +32,7 @@ from digest_sources import (
 def build_stats():
     return {
         "fetched_target_day": 0,
+        "fetched_target_announcement": 0,
         "pages_fetched": 0,
         "skipped_seen": 0,
         "hard_filtered": 0,
@@ -324,8 +325,9 @@ def main():
     new_seen = set(seen)
     all_assessments = []
 
-    papers, target_date, pages_fetched = fetch_papers(config)
+    papers, target_announcement, pages_fetched = fetch_papers(config)
     stats["fetched_target_day"] = len(papers)
+    stats["fetched_target_announcement"] = len(papers)
     stats["pages_fetched"] = pages_fetched
 
     pending_papers = prepare_pending_papers(
@@ -395,7 +397,9 @@ def main():
 
     summary_payload = {
         "dry_run": config["dry_run"],
-        "target_date": target_date.isoformat(),
+        "target_date": target_announcement["label_date"].isoformat(),
+        "target_announcement_local": target_announcement["announcement_local"].isoformat(),
+        "target_announcement_et": target_announcement["announcement_et"].isoformat(),
         "local_timezone": config["local_timezone"],
         "stats": stats,
         "selected_titles": [paper["title"] for paper in selected],

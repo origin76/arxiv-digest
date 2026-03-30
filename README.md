@@ -106,7 +106,7 @@ source ./local.env.sh
 | `LOG_RAW_LLM` | 是否保存原始 prompt/response |
 | `MAX_SELECTED_PAPERS` | 最终发送的 Top N，默认 10 |
 | `ARXIV_PAGE_SIZE` | 每页抓取多少篇，默认 100 |
-| `TARGET_DAYS_AGO` | 抓取几天前的论文，默认 1 表示昨天 |
+| `TARGET_DAYS_AGO` | 回看几期 arXiv 已发布公告，默认 `1` 表示最近一期公告 |
 | `LOCAL_TIMEZONE` | 本地时区，默认 `Asia/Shanghai` |
 | `LLM_MODEL` | 评估和摘要使用的模型 |
 | `LLM_TIMEOUT_SECONDS` | 单次 LLM 请求超时时间 |

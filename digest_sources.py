@@ -24,6 +24,10 @@ ARXIV_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 ARXIV_BASE_BACKOFF_SECONDS = 5.0
 ARXIV_MAX_BACKOFF_SECONDS = 60.0
 ARXIV_PAGE_DELAY_SECONDS = 3.0
+ARXIV_ANNOUNCEMENT_TIMEZONE = ZoneInfo("America/New_York")
+ARXIV_ANNOUNCEMENT_HOUR = 20
+ARXIV_SUBMISSION_DEADLINE_HOUR = 14
+ARXIV_ANNOUNCEMENT_WEEKDAYS = {6, 0, 1, 2, 3}
 OPENALEX_API_BASE = "https://api.openalex.org"
 OPENALEX_AUTHOR_SEARCH_SELECT_FIELDS = "id,display_name,works_count,orcid"
 HARD_EXCLUDE_PATTERNS = [
@@ -182,18 +186,56 @@ def fetch_arxiv_feed(url):
     raise RuntimeError("arXiv feed request exhausted all retry attempts")
 
 
-def get_target_date(config):
+def build_announcement_datetime(date_value):
+    return datetime(
+        date_value.year,
+        date_value.month,
+        date_value.day,
+        ARXIV_ANNOUNCEMENT_HOUR,
+        0,
+        0,
+        tzinfo=ARXIV_ANNOUNCEMENT_TIMEZONE,
+    )
+
+
+def previous_arxiv_announcement_datetime(announcement_dt):
+    candidate_date = announcement_dt.date() - timedelta(days=1)
+    while candidate_date.weekday() not in ARXIV_ANNOUNCEMENT_WEEKDAYS:
+        candidate_date -= timedelta(days=1)
+    return build_announcement_datetime(candidate_date)
+
+
+def get_latest_completed_arxiv_announcement(now_et):
+    candidate_date = now_et.date()
+    candidate_dt = build_announcement_datetime(candidate_date)
+    if candidate_date.weekday() in ARXIV_ANNOUNCEMENT_WEEKDAYS and now_et >= candidate_dt:
+        return candidate_dt
+    return previous_arxiv_announcement_datetime(candidate_dt)
+
+
+def get_target_announcement(config):
     local_tz = ZoneInfo(config["local_timezone"])
     now_local = datetime.now(local_tz)
-    return now_local.date() - timedelta(days=config["target_days_ago"])
+    now_et = now_local.astimezone(ARXIV_ANNOUNCEMENT_TIMEZONE)
+    target_announcement_et = get_latest_completed_arxiv_announcement(now_et)
+
+    for _ in range(config["target_days_ago"] - 1):
+        target_announcement_et = previous_arxiv_announcement_datetime(target_announcement_et)
+
+    target_announcement_local = target_announcement_et.astimezone(local_tz)
+    return {
+        "announcement_et": target_announcement_et,
+        "announcement_local": target_announcement_local,
+        "label_date": target_announcement_local.date(),
+    }
 
 
-def parse_entry_published(entry, local_tz):
+def parse_entry_published_utc(entry):
     published_parsed = getattr(entry, "published_parsed", None)
     if not published_parsed:
         raise ValueError("entry is missing published_parsed")
 
-    published_utc = datetime(
+    return datetime(
         published_parsed.tm_year,
         published_parsed.tm_mon,
         published_parsed.tm_mday,
@@ -202,13 +244,50 @@ def parse_entry_published(entry, local_tz):
         published_parsed.tm_sec,
         tzinfo=timezone.utc,
     )
-    return published_utc.astimezone(local_tz)
+
+
+def get_arxiv_announcement_for_submission(submitted_utc):
+    submitted_et = submitted_utc.astimezone(ARXIV_ANNOUNCEMENT_TIMEZONE)
+    cutoff_dt = submitted_et.replace(
+        hour=ARXIV_SUBMISSION_DEADLINE_HOUR,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    weekday = submitted_et.weekday()
+    announcement_date = submitted_et.date()
+
+    if weekday == 0:
+        if submitted_et >= cutoff_dt:
+            announcement_date += timedelta(days=1)
+    elif weekday == 1:
+        if submitted_et >= cutoff_dt:
+            announcement_date += timedelta(days=1)
+    elif weekday == 2:
+        if submitted_et >= cutoff_dt:
+            announcement_date += timedelta(days=1)
+    elif weekday == 3:
+        if submitted_et >= cutoff_dt:
+            announcement_date += timedelta(days=3)
+    elif weekday == 4:
+        if submitted_et < cutoff_dt:
+            announcement_date += timedelta(days=2)
+        else:
+            announcement_date += timedelta(days=3)
+    elif weekday == 5:
+        announcement_date += timedelta(days=2)
+    else:
+        announcement_date += timedelta(days=1)
+
+    return build_announcement_datetime(announcement_date)
 
 
 def fetch_papers(config):
     page_size = config["arxiv_page_size"]
-    target_date = get_target_date(config)
     local_tz = ZoneInfo(config["local_timezone"])
+    target_announcement = get_target_announcement(config)
+    target_announcement_et = target_announcement["announcement_et"]
+    target_announcement_local = target_announcement["announcement_local"]
     selected_entries = []
     artifact_entries = []
     page_index = 0
@@ -227,11 +306,12 @@ def fetch_papers(config):
             time.sleep(ARXIV_PAGE_DELAY_SECONDS)
         start_time = time.perf_counter()
         LOGGER.info(
-            "Fetching arXiv feed page | page=%d start=%d page_size=%d target_date=%s timezone=%s url=%s",
+            "Fetching arXiv feed page | page=%d start=%d page_size=%d target_announcement_local=%s target_announcement_et=%s timezone=%s url=%s",
             page_index + 1,
             start,
             page_size,
-            target_date.isoformat(),
+            target_announcement_local.isoformat(),
+            target_announcement_et.isoformat(),
             config["local_timezone"],
             paged_url,
         )
@@ -261,9 +341,11 @@ def fetch_papers(config):
             title = " ".join(getattr(entry, "title", "").split())
             entry_id = getattr(entry, "id", "")
             entry_link = getattr(entry, "link", "")
-            published_local = parse_entry_published(entry, local_tz)
+            published_utc = parse_entry_published_utc(entry)
+            published_local = published_utc.astimezone(local_tz)
             published_local_iso = published_local.isoformat()
-            published_local_date = published_local.date()
+            announcement_et = get_arxiv_announcement_for_submission(published_utc)
+            announcement_local = announcement_et.astimezone(local_tz)
 
             artifact_entries.append(
                 {
@@ -271,22 +353,26 @@ def fetch_papers(config):
                     "title": title,
                     "link": entry_link,
                     "published_local": published_local_iso,
-                    "published_local_date": published_local_date.isoformat(),
+                    "published_local_date": published_local.date().isoformat(),
+                    "announcement_local": announcement_local.isoformat(),
+                    "announcement_et": announcement_et.isoformat(),
                 }
             )
 
-            if published_local_date > target_date:
+            if announcement_et > target_announcement_et:
                 continue
 
-            if published_local_date == target_date:
+            if announcement_et == target_announcement_et:
                 selected_entries.append(entry)
                 continue
 
             LOGGER.info(
-                "Reached entries older than target date, stopping pagination | first_older_id=%s published_local=%s target_date=%s",
+                "Reached entries older than target arXiv announcement, stopping pagination | first_older_id=%s published_local=%s announcement_local=%s target_announcement_local=%s target_announcement_et=%s",
                 entry_id,
                 published_local_iso,
-                target_date.isoformat(),
+                announcement_local.isoformat(),
+                target_announcement_local.isoformat(),
+                target_announcement_et.isoformat(),
             )
             stop_fetching = True
             break
@@ -299,13 +385,14 @@ def fetch_papers(config):
 
     write_json_artifact("fetched_entries.json", artifact_entries)
     LOGGER.info(
-        "Collected target-day papers from arXiv | target_date=%s count=%d pages_fetched=%d",
-        target_date.isoformat(),
+        "Collected papers from target arXiv announcement | target_announcement_local=%s target_announcement_et=%s count=%d pages_fetched=%d",
+        target_announcement_local.isoformat(),
+        target_announcement_et.isoformat(),
         len(selected_entries),
         page_index + 1,
     )
 
-    return selected_entries, target_date, page_index + 1
+    return selected_entries, target_announcement, page_index + 1
 
 
 def load_seen():
