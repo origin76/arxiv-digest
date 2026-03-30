@@ -3,6 +3,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -18,6 +19,11 @@ OPENALEX_CACHE_PATH = Path("openalex_cache.json")
 ARXIV_SEARCH_QUERY = "(cat:cs.OS OR cat:cs.PL OR cat:cs.LG OR cat:cs.DC OR cat:cs.AR)"
 ARXIV_API_BASE = "https://export.arxiv.org/api/query"
 ARXIV_TIMEOUT_SECONDS = 30
+ARXIV_MAX_ATTEMPTS = 5
+ARXIV_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+ARXIV_BASE_BACKOFF_SECONDS = 5.0
+ARXIV_MAX_BACKOFF_SECONDS = 60.0
+ARXIV_PAGE_DELAY_SECONDS = 3.0
 OPENALEX_API_BASE = "https://api.openalex.org"
 OPENALEX_AUTHOR_SEARCH_SELECT_FIELDS = "id,display_name,works_count,orcid"
 HARD_EXCLUDE_PATTERNS = [
@@ -55,15 +61,125 @@ def build_arxiv_url(max_results):
     return f"{ARXIV_API_BASE}?{urlencode(params)}"
 
 
+def parse_retry_after_seconds(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    try:
+        return max(float(text), 0.0)
+    except ValueError:
+        pass
+
+    try:
+        retry_at = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+
+    return max((retry_at - datetime.now(timezone.utc)).total_seconds(), 0.0)
+
+
+def compute_arxiv_backoff_seconds(attempt, retry_after_header=None):
+    retry_after_seconds = parse_retry_after_seconds(retry_after_header)
+    if retry_after_seconds is not None:
+        return retry_after_seconds
+
+    return min(
+        ARXIV_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)),
+        ARXIV_MAX_BACKOFF_SECONDS,
+    )
+
+
 def fetch_arxiv_feed(url):
     headers = {
         "User-Agent": "arxiv-digest/1.0 (+https://github.com/)",
         "Accept": "application/atom+xml, application/xml;q=0.9, */*;q=0.8",
     }
     request = Request(url, headers=headers)
-    with urlopen(request, timeout=ARXIV_TIMEOUT_SECONDS) as response:
-        payload = response.read()
-    return feedparser.parse(payload)
+
+    for attempt in range(1, ARXIV_MAX_ATTEMPTS + 1):
+        start_time = time.perf_counter()
+        LOGGER.info(
+            "arXiv feed request started | attempt=%d/%d timeout=%ss url=%s",
+            attempt,
+            ARXIV_MAX_ATTEMPTS,
+            ARXIV_TIMEOUT_SECONDS,
+            url,
+        )
+        try:
+            with urlopen(request, timeout=ARXIV_TIMEOUT_SECONDS) as response:
+                payload = response.read()
+        except HTTPError as exc:
+            duration = time.perf_counter() - start_time
+            retry_after_header = exc.headers.get("Retry-After") if exc.headers else None
+            LOGGER.warning(
+                "arXiv feed request failed | attempt=%d/%d duration=%.2fs status=%s reason=%s retry_after=%s url=%s",
+                attempt,
+                ARXIV_MAX_ATTEMPTS,
+                duration,
+                exc.code,
+                exc.reason,
+                retry_after_header or "<none>",
+                url,
+            )
+
+            if exc.code not in ARXIV_RETRYABLE_STATUS_CODES or attempt == ARXIV_MAX_ATTEMPTS:
+                raise
+
+            sleep_seconds = compute_arxiv_backoff_seconds(
+                attempt,
+                retry_after_header=retry_after_header,
+            )
+            LOGGER.info(
+                "Retrying arXiv feed request after HTTP error | attempt=%d/%d sleep=%.2fs status=%s url=%s",
+                attempt,
+                ARXIV_MAX_ATTEMPTS,
+                sleep_seconds,
+                exc.code,
+                url,
+            )
+            time.sleep(sleep_seconds)
+            continue
+        except (URLError, TimeoutError) as exc:
+            duration = time.perf_counter() - start_time
+            LOGGER.warning(
+                "arXiv feed request failed | attempt=%d/%d duration=%.2fs error=%s url=%s",
+                attempt,
+                ARXIV_MAX_ATTEMPTS,
+                duration,
+                exc,
+                url,
+            )
+
+            if attempt == ARXIV_MAX_ATTEMPTS:
+                raise
+
+            sleep_seconds = compute_arxiv_backoff_seconds(attempt)
+            LOGGER.info(
+                "Retrying arXiv feed request after transport error | attempt=%d/%d sleep=%.2fs url=%s",
+                attempt,
+                ARXIV_MAX_ATTEMPTS,
+                sleep_seconds,
+                url,
+            )
+            time.sleep(sleep_seconds)
+            continue
+
+        duration = time.perf_counter() - start_time
+        LOGGER.info(
+            "arXiv feed request finished | attempt=%d/%d duration=%.2fs bytes=%d url=%s",
+            attempt,
+            ARXIV_MAX_ATTEMPTS,
+            duration,
+            len(payload),
+            url,
+        )
+        return feedparser.parse(payload)
+
+    raise RuntimeError("arXiv feed request exhausted all retry attempts")
 
 
 def get_target_date(config):
@@ -102,6 +218,13 @@ def fetch_papers(config):
     while True:
         url = build_arxiv_url(page_size)
         paged_url = f"{url}&start={start}"
+        if page_index > 0:
+            LOGGER.info(
+                "Respecting arXiv API pacing before next page | sleep=%.2fs next_page=%d",
+                ARXIV_PAGE_DELAY_SECONDS,
+                page_index + 1,
+            )
+            time.sleep(ARXIV_PAGE_DELAY_SECONDS)
         start_time = time.perf_counter()
         LOGGER.info(
             "Fetching arXiv feed page | page=%d start=%d page_size=%d target_date=%s timezone=%s url=%s",
