@@ -108,7 +108,7 @@ source ./local.env.sh
 | `ARXIV_PAGE_SIZE` | 每页抓取多少篇，默认 100 |
 | `TARGET_DAYS_AGO` | 回看几期 arXiv 已发布公告，默认 `1` 表示最近一期公告 |
 | `LOCAL_TIMEZONE` | 本地时区，默认 `Asia/Shanghai` |
-| `LLM_MODEL` | 评估和摘要使用的模型 |
+| `LLM_MODEL` | 评估和摘要使用的模型，默认 `qwen3.6-plus` |
 | `LLM_TIMEOUT_SECONDS` | 单次 LLM 请求超时时间 |
 | `LLM_ASSESS_MAX_WORKERS` | 相关性评估阶段的并发线程数，默认 8 |
 | `LLM_SUMMARY_MAX_WORKERS` | summary 阶段的并发线程数，默认 4 |

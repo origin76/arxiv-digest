@@ -8,7 +8,7 @@ from pathlib import Path
 from openai import OpenAI
 
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_LLM_MODEL = "qwen3.5-plus"
+DEFAULT_LLM_MODEL = "qwen3.6-plus"
 DEFAULT_LOG_DIR = "logs"
 
 LOGGER = logging.getLogger("arxiv_digest")
